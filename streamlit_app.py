@@ -1,38 +1,90 @@
-from collections import namedtuple
-import altair as alt
-import math
-import pandas as pd
 import streamlit as st
+import gdal
+from osgeo import osr
+import tempfile
+import shutil
 
-"""
-# Welcome to Streamlit!
+# Target spatial reference system (WGS84, EPSG:4326)
+target_epsg = 4326
 
-Edit `/streamlit_app.py` to customize this app to your heart's desire :heart:
+# Function to reproject the DEM file
+def reproject_dem(input_file):
+    # Create a temporary directory to store intermediate files
+    temp_dir = tempfile.mkdtemp()
+    
+    # Get the filename and extension of the input file
+    filename = input_file.name
+    extension = filename.split(".")[-1]
 
-If you have any questions, checkout our [documentation](https://docs.streamlit.io) and [community
-forums](https://discuss.streamlit.io).
+    # Path to the temporary input DEM file
+    temp_input_file = os.path.join(temp_dir, filename)
 
-In the meantime, below is an example of what you can do with just a few lines of code:
-"""
+    # Copy the uploaded file to the temporary directory
+    with open(temp_input_file, "wb") as f:
+        f.write(input_file.getbuffer())
 
+    # Path to the output reprojected DEM file
+    output_file = os.path.join(temp_dir, "reprojected_dem.tif")
 
-with st.echo(code_location='below'):
-    total_points = st.slider("Number of points in spiral", 1, 5000, 2000)
-    num_turns = st.slider("Number of turns in spiral", 1, 100, 9)
+    # Open the input DEM file
+    dataset = gdal.Open(temp_input_file)
 
-    Point = namedtuple('Point', 'x y')
-    data = []
+    # Get the spatial reference system of the input DEM
+    source_srs = osr.SpatialReference()
+    source_srs.ImportFromWkt(dataset.GetProjection())
 
-    points_per_turn = total_points / num_turns
+    # Create a transformation from the source to the target spatial reference system
+    transform = osr.CoordinateTransformation(source_srs, osr.SpatialReference(target_epsg))
 
-    for curr_point_num in range(total_points):
-        curr_turn, i = divmod(curr_point_num, points_per_turn)
-        angle = (curr_turn + 1) * 2 * math.pi * i / points_per_turn
-        radius = curr_point_num / total_points
-        x = radius * math.cos(angle)
-        y = radius * math.sin(angle)
-        data.append(Point(x, y))
+    # Get the input DEM's dimensions
+    width = dataset.RasterXSize
+    height = dataset.RasterYSize
 
-    st.altair_chart(alt.Chart(pd.DataFrame(data), height=500, width=500)
-        .mark_circle(color='#0068c9', opacity=0.5)
-        .encode(x='x:Q', y='y:Q'))
+    # Get the geotransformation information (bounding box and pixel size) of the input DEM
+    geotransform = dataset.GetGeoTransform()
+
+    # Create an output dataset with the reprojected DEM
+    driver = gdal.GetDriverByName("GTiff")
+    output_dataset = driver.Create(output_file, width, height, 1, gdal.GDT_Float32)
+
+    # Set the geotransformation and projection information for the output dataset
+    output_dataset.SetGeoTransform(geotransform)
+    output_dataset.SetProjection(target_epsg)
+
+    # Reproject each pixel of the input DEM to the target spatial reference system
+    gdal.ReprojectImage(dataset, output_dataset, source_srs.ExportToWkt(), transform.ExportToWkt(), gdal.GRA_Bilinear)
+
+    # Close the datasets
+    dataset = None
+    output_dataset = None
+
+    # Remove the temporary input DEM file
+    os.remove(temp_input_file)
+
+    return output_file
+
+# Create the Streamlit app
+def main():
+    st.title("DEM Reprojection")
+
+    # Upload the input DEM file
+    input_file = st.file_uploader("Upload DEM file", type=["tif", "tiff"])
+
+    if input_file is not None:
+        # Display the uploaded DEM file
+        st.subheader("Input DEM")
+        st.image(input_file)
+
+        # Reproject the DEM file
+        reprojected_file = reproject_dem(input_file)
+
+        # Display the reprojected DEM file
+        st.subheader("Reprojected DEM")
+        st.image(reprojected_file)
+
+        # Remove the temporary directory
+        shutil.rmtree(os.path.dirname(reprojected_file))
+
+# Run the Streamlit app
+if __name__ == "__main__":
+    main()
